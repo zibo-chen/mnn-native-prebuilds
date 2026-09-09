@@ -198,6 +198,8 @@ def prepare_kleidiai(lock, work):
 
 
 def build(name, source, work, output, jobs):
+    builder_sha = run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture=True)
+    builder_dirty = bool(run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT, capture=True))
     lock, config = configuration()
     if name not in config["targets"]:
         raise ValueError("Unknown target: " + name)
@@ -263,8 +265,9 @@ def build(name, source, work, output, jobs):
     manifest = {"schema_version": 1, "component": "mnn", "package": package_name,
                 "source": lock, "patches": patch_records(lock), "target": name,
                 "platform": target, "backends": ["cpu"] + (["metal"] if target["profile"] == "metal" else []),
-                "builder_sha": run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture=True),
-                "builder_dirty": bool(run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT, capture=True)),
+                "builder_sha": builder_sha,
+                "builder_dirty": builder_dirty or builder_sha != run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture=True)
+                                 or bool(run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT, capture=True)),
                 "environment": {"host": platform.platform(), "python": sys.version,
                                 "cmake": run(["cmake", "--version"], capture=True).splitlines()[0],
                                 "runner_image": os.environ.get("ImageVersion", "local")},
