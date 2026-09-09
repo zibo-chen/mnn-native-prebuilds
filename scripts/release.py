@@ -62,7 +62,7 @@ def assemble(directory, selection="all"):
     notes = ["MNN native prebuilts " + lock["package_version"], "",
              "Upstream: [alibaba/MNN@" + lock["ref"][:8] + "](https://github.com/alibaba/MNN/commit/" + lock["ref"] + ").",
              "", "".join(["Source version: ", lock["version"], ". Packaging revision: ", str(lock["revision"]), "."]),
-             "The exact source is a post-3.6.0 commit; see the source lock in index.json.", "",
+             lock["note"], "",
              "Each SDK contains libraries, headers, a relocatable CMake package, licenses and a manifest.",
              "All published static/shared variants passed consumer linking. Native desktop variants also passed CPU inference.",
              "Cross-target inference and Metal GPU execution are not validated by this workflow.", "",

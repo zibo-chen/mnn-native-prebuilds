@@ -123,4 +123,3 @@ jobs:
             dist/index.json
             dist/SHA256SUMS
             dist/release-notes.md
-
