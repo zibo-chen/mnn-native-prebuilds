@@ -1,0 +1,126 @@
+name: Build MNN packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Target from configs/mnn.json, or all
+        type: string
+        default: all
+        required: true
+      publish:
+        description: Publish a new release after all ten targets pass
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mnn-build-${{ github.ref }}-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate source lock and target selection
+        id: plan
+        env:
+          BUILD_TARGET: ${{ inputs.target }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          if [[ "$PUBLISH" == true && "$BUILD_TARGET" != all ]]; then
+            echo 'Publishing requires all targets.' >&2
+            exit 1
+          fi
+          python -m unittest discover -s tests -v
+          python recipes/mnn/build.py plan --target "$BUILD_TARGET"
+
+  build:
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned build tools
+        run: python -m pip install cmake==3.31.6 ninja==1.11.1.3
+      - name: Install Linux ARM64 cross compiler
+        if: matrix.target == 'linux-aarch64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: matrix.os == 'windows'
+        with:
+          arch: ${{ matrix.msvc_arch }}
+      - name: Install pinned Android NDK
+        if: matrix.os == 'android'
+        env:
+          NDK_VERSION: ${{ matrix.ndk_version }}
+        run: |
+          sdkmanager --install "ndk;$NDK_VERSION"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      - name: Fetch exact upstream source and apply compatibility patches
+        run: python recipes/mnn/build.py prepare
+      - name: Build libraries and verify consumer packages
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: python recipes/mnn/build.py build --target "$BUILD_TARGET"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mnn-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mnn-*
+          path: dist
+          merge-multiple: true
+      - name: Verify release completeness and publish if requested
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_TARGET: ${{ inputs.target }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          args=(--target "$BUILD_TARGET")
+          if [[ "$PUBLISH" == true ]]; then
+            args+=(--publish)
+          fi
+          python scripts/release.py "${args[@]}"
+          cat dist/release-notes.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-index
+          path: |
+            dist/index.json
+            dist/SHA256SUMS
+            dist/release-notes.md
+

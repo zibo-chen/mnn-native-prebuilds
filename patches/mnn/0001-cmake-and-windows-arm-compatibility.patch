@@ -1,0 +1,50 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e292c137..18e6a28f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,4 +1,4 @@
+-cmake_minimum_required(VERSION 3.6)
++cmake_minimum_required(VERSION 3.10)
+ # Versioning stuff
+ file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/include/MNN/MNNDefine.h" MNN_DEFINE)
+ string(REGEX MATCH "MNN_VERSION_MAJOR [0-9]+" MNN_VERSION_MAJOR_DEFINE ${MNN_DEFINE})
+diff --git a/source/backend/cpu/CMakeLists.txt b/source/backend/cpu/CMakeLists.txt
+index 13f53c26..ce2f07f7 100644
+--- a/source/backend/cpu/CMakeLists.txt
++++ b/source/backend/cpu/CMakeLists.txt
+@@ -38,7 +38,8 @@ IF(NOT DEFINED IOS_ARCH)
+ ENDIF()
+ 
+ # ARM82 Assemblies
+-IF(MNN_ARM82)
++# Skip ARM82 assembly with native MSVC — it cannot compile GNU-syntax .S files
++IF(MNN_ARM82 AND NOT (WIN32 AND CMAKE_C_COMPILER_ID STREQUAL "MSVC"))
+     IF(CMAKE_SYSTEM_PROCESSOR MATCHES "^armv7" OR ARCHS MATCHES "^armv7(;armv7s)?" OR CMAKE_SYSTEM_PROCESSOR MATCHES "^aarch64" OR ARCHS STREQUAL "arm64" OR ARCHS STREQUAL "ARM64")
+         target_compile_options(MNNCPU PRIVATE -DENABLE_ARMV82)
+         include(${CMAKE_CURRENT_LIST_DIR}/../arm82/CMakeLists.txt)
+diff --git a/source/backend/cpu/arm/CMakeLists.txt b/source/backend/cpu/arm/CMakeLists.txt
+index f3ca4861..3ee2ad08 100644
+--- a/source/backend/cpu/arm/CMakeLists.txt
++++ b/source/backend/cpu/arm/CMakeLists.txt
+@@ -1,3 +1,10 @@
++# MSVC's native assembler (armasm64) cannot compile GNU-syntax .S files.
++# Skip ARM assembly when using native MSVC (not clang-cl) on Windows.
++# clang-cl sets CMAKE_C_COMPILER_ID to "Clang" even with MSVC=true.
++if(WIN32 AND CMAKE_C_COMPILER_ID STREQUAL "MSVC")
++    return()
++endif()
++
+ IF(NOT DEFINED ARCHS)
+   set(ARCHS ${CMAKE_SYSTEM_PROCESSOR})
+ ENDIF()
+@@ -29,7 +36,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^armv7" OR ARCHS MATCHES "^armv7(;armv7s)?")
+ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^aarch64" OR ARCHS STREQUAL "arm64" OR ARCHS STREQUAL "ARM64")
+     message(STATUS "Enabling AArch64 Assemblies")
+ 
+-    if (MNN_KLEIDIAI)
++    # KleidiAI assembly uses ARM assembler syntax (DCD, bare labels) that is
++    # incompatible with clang-cl / Clang's integrated assembler on Windows.
++    if (MNN_KLEIDIAI AND NOT WIN32)
+        include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/KleidiAI.cmake)
+        download_kleidiai_and_collect_sources()
+        if(MNN_KLEIDIAI_DEFAULT_ON)

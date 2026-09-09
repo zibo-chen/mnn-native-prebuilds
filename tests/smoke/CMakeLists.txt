@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.24)
+project(mnn_consumer_smoke LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreaded)
+find_package(MNN CONFIG REQUIRED)
+add_executable(mnn_smoke main.cpp)
+target_link_libraries(mnn_smoke PRIVATE MNN::MNN)
