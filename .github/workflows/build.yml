@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: Target from configs/mnn.json, or all
+        description: Target from configs/mnn.json, all, or backends
         type: string
         default: all
         required: true
       publish:
-        description: Publish a new release after all ten targets pass
+        description: Publish a new release after the complete matrix passes
         type: boolean
         default: false
 
@@ -47,7 +47,7 @@ jobs:
     name: ${{ matrix.target }}
     needs: plan
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.cuda && 180 || 60 }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -62,7 +62,7 @@ jobs:
       - name: Install pinned build tools
         run: python -m pip install cmake==3.31.6 ninja==1.11.1.3
       - name: Install Linux ARM64 cross compiler
-        if: matrix.target == 'linux-aarch64'
+        if: matrix.os == 'linux' && contains(matrix.archs, 'aarch64')
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
@@ -70,6 +70,36 @@ jobs:
         if: matrix.os == 'windows'
         with:
           arch: ${{ matrix.msvc_arch }}
+      - name: Install pinned CUDA toolkit (Linux)
+        if: matrix.cuda && matrix.os == 'linux'
+        uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
+        with:
+          cuda: ${{ matrix.cuda.version }}
+          method: network
+          sub-packages: '["nvcc", "cudart-dev", "cccl", "cuobjdump"]'
+          non-cuda-sub-packages: '["libcublas-dev"]'
+          log-file-suffix: ${{ matrix.target }}
+      - name: Install pinned CUDA toolkit (Windows)
+        if: matrix.cuda && matrix.os == 'windows'
+        uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
+        with:
+          cuda: ${{ matrix.cuda.version }}
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "cuobjdump", "thrust"]'
+          log-file-suffix: ${{ matrix.target }}
+      - name: Install software Vulkan device for backend inference tests
+        if: contains(matrix.software_backend_tests, 'vulkan')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+          for icd in /usr/share/vulkan/icd.d/lvp_icd*.json; do
+            if [[ -f "$icd" ]]; then
+              echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo 'Mesa software Vulkan ICD not found.' >&2
+          exit 1
       - name: Install pinned Android NDK
         if: matrix.os == 'android'
         env:

@@ -3,19 +3,27 @@
   "repository": "alibaba/MNN",
   "version": "3.6.0",
   "ref": "9070bc73ae40500bc7202975142b43f488bf10d8",
-  "revision": 1,
-  "package_version": "3.6.0-9070bc73-r1",
-  "release_tag": "mnn-3.6.0-9070bc73-r1",
+  "revision": 2,
+  "package_version": "3.6.0-9070bc73-r2",
+  "release_tag": "mnn-3.6.0-9070bc73-r2",
   "dependencies": {
     "kleidiai": {
       "version": "1.16.0",
       "url": "https://codeload.github.com/ARM-software/kleidiai/tar.gz/refs/tags/v1.16.0",
       "sha256": "57b0a95c559ec6a4b1460bc742af600bfb6cdff8dc39154b376c25347d7b0891"
+    },
+    "cutlass": {
+      "version": "2.9.0",
+      "ref": "319a389f42b776fae5701afcb943fc03be5b5c25",
+      "url": "https://codeload.github.com/NVIDIA/cutlass/tar.gz/319a389f42b776fae5701afcb943fc03be5b5c25",
+      "sha256": "1d1eac5bcbcced5c1a7f3de433143c0ab269f07551865ba9aa0fcb8618e988c4"
     }
   },
   "patches": [
     "patches/mnn/0001-cmake-and-windows-arm-compatibility.patch",
-    "patches/mnn/0002-remove-release-compiler-pdb-references.patch"
+    "patches/mnn/0002-remove-release-compiler-pdb-references.patch",
+    "patches/mnn/0003-respect-explicit-cuda-architectures.patch",
+    "patches/mnn/0004-linux-gpu-runtime-sonames.patch"
   ],
   "note": "The upstream commit used by the previous repository's successful August 17, 2026 build. This is a post-3.6.0 commit, not the 3.6.0 release tag."
 }

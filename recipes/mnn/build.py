@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Pinned MNN source preparation, cross-platform builds and package verification."""
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -15,6 +16,8 @@ import urllib.request
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
+BACKEND_OPTIONS = {name: "MNN_" + name.upper() for name in
+                   ("metal", "cuda", "vulkan", "opencl", "opengl", "coreml")}
 
 
 def read_json(path):
@@ -28,6 +31,23 @@ def write_json(path, value):
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def stream_digest(handle):
+    checksum = hashlib.sha256()
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        checksum.update(chunk)
+    return checksum.hexdigest()
+
+
+def file_digest(path):
+    with Path(path).open("rb") as handle:
+        return stream_digest(handle)
+
+
+def backend_names(config, target):
+    options = {**config["common"], **config["profiles"][target["profile"]], **target["cmake"]}
+    return ["cpu"] + [name for name, option in BACKEND_OPTIONS.items() if options[option] == "ON"]
 
 
 def run(args, cwd=None, capture=False, env=None):
@@ -49,19 +69,40 @@ def configuration():
             raise ValueError("Invalid " + key)
     if lock["repository"] != "alibaba/MNN":
         raise ValueError("Source repository must be alibaba/MNN")
+    baselines = copy.deepcopy(config["targets"])
+    for name, variant in config.pop("variants", {}).items():
+        if name in baselines or variant["base"] not in baselines:
+            raise ValueError("Variant must inherit a distinct baseline target: " + name)
+        base = copy.deepcopy(baselines[variant["base"]])
+        config["targets"][name] = {**base, **variant, "cmake": {**base["cmake"], **variant.get("cmake", {})}}
     for name, target in config["targets"].items():
         if not re.fullmatch(r"[a-z0-9_-]+", name):
             raise ValueError("Invalid target name")
         if target["profile"] not in config["profiles"]:
             raise ValueError("Unknown profile for " + name)
-        if target["profile"] == "metal" and target["os"] not in ("macos", "ios"):
-            raise ValueError("Metal requires an Apple target")
+        backends = backend_names(config, target)
+        if {"metal", "coreml"}.intersection(backends) and target["os"] not in ("macos", "ios"):
+            raise ValueError("Metal and CoreML require an Apple target")
+        if "opengl" in backends and target["os"] != "android":
+            raise ValueError("OpenGL packages require Android")
+        if "cuda" in backends:
+            if target["os"] not in ("linux", "windows") or target["archs"] != ["x86_64"]:
+                raise ValueError("CUDA packages require Linux or Windows x86_64")
+            if not target.get("cuda", {}).get("architectures"):
+                raise ValueError("CUDA architectures must be explicit")
+        if not set(target.get("software_backend_tests", [])).issubset(backends):
+            raise ValueError("Cannot test an unavailable backend")
     return lock, config
 
 
 def matrix(selection):
     lock, config = configuration()
-    names = list(config["targets"]) if selection == "all" else [selection]
+    if selection == "all":
+        names = list(config["targets"])
+    elif selection == "backends":
+        names = [name for name, target in config["targets"].items() if "base" in target]
+    else:
+        names = [selection]
     if any(name not in config["targets"] for name in names):
         raise ValueError("Unknown target: " + selection)
     return lock, {"include": [dict(target=name, **config["targets"][name]) for name in names]}
@@ -117,6 +158,12 @@ def cmake_definitions(config, target, arch, shared):
         definitions.update(CMAKE_OSX_ARCHITECTURES=arch, MNN_USE_SSE="ON" if arch == "x86_64" else "OFF")
         if arch == "arm64":
             definitions["MNN_ARM82"] = "ON"
+    if "cuda" in target:
+        definitions["CUDA_ARCHS"] = ";".join(target["cuda"]["architectures"])
+        if os.environ.get("CUDA_PATH"):
+            definitions["CUDA_TOOLKIT_ROOT_DIR"] = os.environ["CUDA_PATH"]
+        if target["os"] == "linux":
+            definitions.update(CMAKE_BUILD_WITH_INSTALL_RPATH="ON", CMAKE_INSTALL_RPATH="$ORIGIN")
     if target["os"] == "android":
         ndk = os.environ.get("ANDROID_NDK_ROOT") or os.environ.get("ANDROID_NDK")
         if not ndk or not (Path(ndk) / "build/cmake/android.toolchain.cmake").is_file():
@@ -134,8 +181,12 @@ def cmake_definitions(config, target, arch, shared):
 def library_names(target, shared):
     if target["os"] == "windows":
         return [("MNN.lib", "MNN.lib"), ("MNN.dll", "MNN.dll")] if shared else [("MNN.lib", "MNN_static.lib")]
-    return [("libMNN" + (".dylib" if target["os"] == "macos" else ".so"),
-             "libMNN" + (".dylib" if target["os"] == "macos" else ".so"))] if shared else [("libMNN.a", "libMNN.a")]
+    libraries = [("libMNN" + (".dylib" if target["os"] == "macos" else ".so"),
+                  "libMNN" + (".dylib" if target["os"] == "macos" else ".so"))] if shared else [("libMNN.a", "libMNN.a")]
+    if "cuda" in target and target["os"] == "linux":
+        libraries.append(("source/backend/cuda/libMNN_Cuda_Main.so",
+                          ("" if shared else "cuda-static/") + "libMNN_Cuda_Main.so"))
+    return libraries
 
 
 def can_run(target, arch):
@@ -150,21 +201,34 @@ def smoke(package, target, arch, shared, definitions, work):
     # Pass toolchain/platform settings, not the MNN project's private build options.
     args = ["-D" + key + "=" + value for key, value in definitions.items()
             if key.startswith(("CMAKE_", "ANDROID_")) and key not in ("CMAKE_INSTALL_NAME_DIR", "CMAKE_BUILD_WITH_INSTALL_NAME_DIR")]
+    _, config = configuration()
+    backends = backend_names(config, target)
     run(["cmake", "-S", ROOT / "tests/smoke", "-B", directory, "-G", "Ninja",
          "-DMNN_DIR=" + str(package / "lib/cmake/MNN"),
+         "-DMNN_REQUIRED_BACKENDS=" + ";".join(backends),
          "-DMNN_USE_STATIC_LIBS=" + ("OFF" if shared else "ON"), *args])
     run(["cmake", "--build", directory, "--parallel", "2"])
     executed = can_run(target, arch)
+    backend_checks = {backend: "not_tested" for backend in backends if backend != "cpu"}
     if executed:
         env = os.environ.copy()
         if target["os"] == "windows":
             env["PATH"] = str(package / "lib") + os.pathsep + env.get("PATH", "")
         else:
             key = "DYLD_LIBRARY_PATH" if target["os"] == "macos" else "LD_LIBRARY_PATH"
-            env[key] = str(package / "lib") + os.pathsep + env.get(key, "")
-        run([directory / ("mnn_smoke.exe" if target["os"] == "windows" else "mnn_smoke")], env=env)
+            search = [str(package / "lib" / "cuda-static")] if "cuda" in target and not shared else []
+            search.append(str(package / "lib"))
+            if "cuda" in target and env.get("CUDA_PATH"):
+                search.append(str(Path(env["CUDA_PATH"]) / "lib64"))
+            env[key] = os.pathsep.join(search + [env.get(key, "")])
+        executable = directory / ("mnn_smoke.exe" if target["os"] == "windows" else "mnn_smoke")
+        run([executable], env=env)
+        for backend in target.get("software_backend_tests", []):
+            run([executable, backend], env=env)
+            backend_checks[backend] = "passed_software_device"
     return {"arch": arch, "linkage": "shared" if shared else "static", "consumer_link": "passed",
-            "cpu_inference": "passed" if executed else "not_run_cross_target", "gpu_inference": "not_tested"}
+            "cpu_inference": "passed" if executed else "not_run_cross_target", "gpu_inference": "not_tested",
+            "backend_inference": backend_checks}
 
 
 def compiler_info(directory):
@@ -178,23 +242,67 @@ def compiler_info(directory):
     return result
 
 
-def prepare_kleidiai(lock, work):
-    dependency = lock["dependencies"]["kleidiai"]
-    archive = work / "kleidiai.tar.gz"
-    with urllib.request.urlopen(dependency["url"], timeout=120) as response:
-        contents = response.read()
-    if digest(contents) != dependency["sha256"]:
-        raise ValueError("KleidiAI archive checksum mismatch")
-    archive.write_bytes(contents)
-    destination = work / "dependencies"
-    destination.mkdir()
+def prepare_dependency(lock, work, name):
+    dependency = lock["dependencies"][name]
+    archive = work / (name + ".tar.gz")
+    with urllib.request.urlopen(dependency["url"], timeout=120) as response, archive.open("wb") as handle:
+        shutil.copyfileobj(response, handle)
+    if file_digest(archive) != dependency["sha256"]:
+        raise ValueError(name + " archive checksum mismatch")
+    destination = work / "dependencies" / name
+    destination.mkdir(parents=True)
     with tarfile.open(archive, "r:gz") as handle:
         for member in handle.getmembers():
             resolved = (destination / member.name).resolve()
             if destination.resolve() not in resolved.parents or not (member.isfile() or member.isdir()):
-                raise ValueError("Unexpected entry in KleidiAI archive")
+                raise ValueError("Unexpected entry in " + name + " archive")
         handle.extractall(destination)
-    return destination / ("kleidiai-" + dependency["version"])
+    roots = list(destination.iterdir())
+    if len(roots) != 1 or not roots[0].is_dir():
+        raise ValueError("Dependency archive must contain one root directory")
+    return roots[0]
+
+
+def runtime_requirements(config, target):
+    descriptions = {
+        "vulkan": "Vulkan loader and a compatible Vulkan device/driver; dynamically loaded",
+        "opencl": "OpenCL loader and a GPU OpenCL implementation; dynamically loaded",
+        "opengl": "Android OpenGL ES 3.1 device, EGL and a suitable graphics context",
+        "metal": "System Metal framework and a supported Apple device",
+        "coreml": "System CoreML and CoreVideo frameworks; supported model operators and Apple device",
+        "cuda": "External CUDA 12 runtime and cuBLAS, plus a compatible NVIDIA driver; CUDA Toolkit >=12.8,<13 needed for CMake linking",
+    }
+    return {backend: descriptions[backend] for backend in backend_names(config, target) if backend != "cpu"}
+
+
+def write_features(directory, config, target):
+    values = {"MNN_AVAILABLE_BACKENDS": ";".join(backend_names(config, target)), "MNN_PROFILE": target["profile"]}
+    if "cuda" in target:
+        values.update(MNN_CUDA_TOOLKIT_VERSION=target["cuda"]["version"],
+                      MNN_CUDA_ARCHITECTURES=";".join(target["cuda"]["architectures"]))
+    (directory / "MNNFeatures.cmake").write_text("".join('set(' + key + ' "' + value + '")\n' for key, value in values.items()))
+
+
+def verify_build_options(directory, definitions):
+    cache = (directory / "CMakeCache.txt").read_text(encoding="utf-8")
+    for option in BACKEND_OPTIONS.values():
+        found = re.search(r"^" + option + r":[^=]+=([^\n]*)$", cache, re.M)
+        if not found or found.group(1) != definitions[option]:
+            raise ValueError("Backend build option mismatch: " + option)
+
+
+def verify_cuda_architectures(path, target):
+    listing = run(["cuobjdump", "--list-elf", path], capture=True)
+    actual = set(re.findall(r"sm_([0-9]+)", listing))
+    expected = {arch.replace("+PTX", "").replace(".", "") for arch in target["cuda"]["architectures"]}
+    if actual != expected:
+        raise ValueError("CUDA cubin architectures do not match: " + repr(actual) + " expected " + repr(expected))
+    ptx = run(["cuobjdump", "--list-ptx", path], capture=True)
+    expected_ptx = {arch.replace("+PTX", "").replace(".", "") for arch in target["cuda"]["architectures"] if arch.endswith("+PTX")}
+    actual_ptx = set(re.findall(r"(?:sm|compute)_([0-9]+)", ptx))
+    if actual_ptx != expected_ptx:
+        raise ValueError("CUDA PTX architectures do not match: " + repr(actual_ptx))
+    return {"cubin": sorted(actual), "ptx": sorted(actual_ptx)}
 
 
 def build(name, source, work, output, jobs):
@@ -204,6 +312,7 @@ def build(name, source, work, output, jobs):
     if name not in config["targets"]:
         raise ValueError("Unknown target: " + name)
     target = config["targets"][name]
+    jobs = jobs or target.get("jobs", min(os.cpu_count() or 2, 8))
     source, work, output = source.resolve(), (work / name).resolve(), output.resolve()
     verify_source(source, lock)
     package_name = "mnn-" + lock["package_version"] + "-" + name
@@ -218,11 +327,19 @@ def build(name, source, work, output, jobs):
     cmake_dir = package / "lib/cmake/MNN"
     cmake_dir.mkdir(parents=True)
     shutil.copy2(ROOT / "recipes/mnn/MNNConfig.cmake", cmake_dir)
-    dependencies = []
+    write_features(cmake_dir, config, target)
+    dependencies = {}
     if any(arch in ("arm64", "aarch64") for arch in target["archs"]) and target["os"] != "windows":
-        dependencies.append(prepare_kleidiai(lock, work))
+        dependencies["kleidiai"] = prepare_dependency(lock, work, "kleidiai")
+    cuda_compiler = None
+    if "cuda" in target:
+        dependencies["cutlass"] = prepare_dependency(lock, work, "cutlass")
+        cuda_compiler = run(["nvcc", "--version"], capture=True)
+        release_version = ".".join(target["cuda"]["version"].split(".")[:2])
+        if "release " + release_version + "," not in cuda_compiler:
+            raise ValueError("nvcc version does not match the CUDA profile")
     # Preserve notices from bundled dependencies and the pinned ARM kernels.
-    for base in [source / "3rd_party", *dependencies]:
+    for base in [source / "3rd_party", *dependencies.values()]:
         for notice in base.rglob("*"):
             if notice.is_file() and re.match(r"^(LICENSE|COPYING|COPYRIGHT|NOTICE)([._-].*)?$", notice.name, re.I):
                 destination = package / "licenses" / base.name / notice.relative_to(base)
@@ -232,21 +349,31 @@ def build(name, source, work, output, jobs):
     for arch in target["archs"]:
         for shared in ([False, True] if target["shared"] else [False]):
             definitions = cmake_definitions(config, target, arch, shared)
-            if dependencies and arch in ("arm64", "aarch64"):
-                definitions["KLEIDIAI_SRC_DIR"] = str(dependencies[0])
+            if "kleidiai" in dependencies and arch in ("arm64", "aarch64"):
+                definitions["KLEIDIAI_SRC_DIR"] = str(dependencies["kleidiai"])
+            if "cutlass" in dependencies:
+                definitions["FETCHCONTENT_SOURCE_DIR_CUTLASS"] = str(dependencies["cutlass"])
             directory = work / (arch + ("-shared" if shared else "-static"))
             run(["cmake", "-S", source, "-B", directory, "-G", "Ninja",
                  *["-D" + k + "=" + v for k, v in definitions.items()]])
+            verify_build_options(directory, definitions)
             run(["cmake", "--build", directory, "--target", "MNN", "--parallel", str(jobs)])
             for original, packaged in library_names(target, shared):
                 path = directory / original
                 if not path.is_file():
                     raise ValueError("Missing build output: " + str(path))
                 libraries.setdefault(packaged, []).append(path)
-            builds.append({"arch": arch, "shared": shared, "cmake": definitions,
-                           "compiler": compiler_info(directory)})
+            result = {"arch": arch, "shared": shared, "cmake": definitions,
+                      "compiler": compiler_info(directory), "backend_options": "verified"}
+            if "cuda" in target:
+                cuda_library = directory / ("MNN.lib" if target["os"] == "windows" and not shared else
+                                            "MNN.dll" if target["os"] == "windows" else
+                                            "source/backend/cuda/libMNN_Cuda_Main.so")
+                result["cuda_binary_architectures"] = verify_cuda_architectures(cuda_library, target)
+            builds.append(result)
     for name_on_disk, paths in libraries.items():
         destination = package / "lib" / name_on_disk
+        destination.parent.mkdir(parents=True, exist_ok=True)
         if len(paths) > 1:
             run(["lipo", "-create", *paths, "-output", destination])
             actual = set(run(["lipo", "-archs", destination], capture=True).split())
@@ -264,15 +391,17 @@ def build(name, source, work, output, jobs):
     checks = [smoke(package, target, item["arch"], item["shared"], item["cmake"], work) for item in builds]
     manifest = {"schema_version": 1, "component": "mnn", "package": package_name,
                 "source": lock, "patches": patch_records(lock), "target": name,
-                "platform": target, "backends": ["cpu"] + (["metal"] if target["profile"] == "metal" else []),
+                "platform": target, "backends": backend_names(config, target),
+                "runtime_requirements": runtime_requirements(config, target),
                 "builder_sha": builder_sha,
                 "builder_dirty": builder_dirty or builder_sha != run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture=True)
                                  or bool(run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT, capture=True)),
                 "environment": {"host": platform.platform(), "python": sys.version,
                                 "cmake": run(["cmake", "--version"], capture=True).splitlines()[0],
+                                "cuda_compiler": cuda_compiler,
                                 "runner_image": os.environ.get("ImageVersion", "local")},
                 "builds": builds, "validation": checks,
-                "files": {str(path.relative_to(package)).replace("\\", "/"): digest(path.read_bytes())
+                "files": {str(path.relative_to(package)).replace("\\", "/"): file_digest(path)
                           for path in sorted(package.rglob("*")) if path.is_file()}}
     write_json(package / "manifest.json", manifest)
     output.mkdir(parents=True, exist_ok=True)
@@ -288,30 +417,46 @@ def build(name, source, work, output, jobs):
             handle.add(package, arcname=package_name)
     shutil.copy2(package / "manifest.json", output / (package_name + ".manifest.json"))
     verify_archive(archive, manifest)
-    (output / (archive.name + ".sha256")).write_text(digest(archive.read_bytes()) + "  " + archive.name + "\n")
+    (output / (archive.name + ".sha256")).write_text(file_digest(archive) + "  " + archive.name + "\n")
     print("Verified package: " + str(archive), flush=True)
 
 
 def verify_archive(path, manifest):
+    prefix = manifest["package"] + "/"
+    expected = {prefix + name: value for name, value in manifest["files"].items()}
+    hashes, names = {}, []
+    embedded = None
     if path.suffix == ".zip":
         with zipfile.ZipFile(path) as handle:
-            names = [item.filename for item in handle.infolist() if not item.is_dir()]
-            contents = {name: handle.read(name) for name in names}
+            for item in handle.infolist():
+                if item.is_dir():
+                    continue
+                names.append(item.filename)
+                with handle.open(item) as contents:
+                    if item.filename == prefix + "manifest.json":
+                        embedded = json.load(contents)
+                    else:
+                        hashes[item.filename] = stream_digest(contents)
     else:
         with tarfile.open(path, "r:gz") as handle:
             entries = handle.getmembers()
             if any(not item.isfile() and not item.isdir() for item in entries):
                 raise ValueError("Archive contains a non-regular entry")
-            names = [item.name for item in entries if item.isfile()]
-            contents = {item.name: handle.extractfile(item).read() for item in entries if item.isfile()}
-    prefix = manifest["package"] + "/"
-    expected = {prefix + name: value for name, value in manifest["files"].items()}
-    if len(set(names)) != len(names) or set(contents) != set(expected) | {prefix + "manifest.json"}:
+            for item in entries:
+                if not item.isfile():
+                    continue
+                names.append(item.name)
+                with handle.extractfile(item) as contents:
+                    if item.name == prefix + "manifest.json":
+                        embedded = json.load(contents)
+                    else:
+                        hashes[item.name] = stream_digest(contents)
+    if len(set(names)) != len(names) or set(names) != set(expected) | {prefix + "manifest.json"}:
         raise ValueError("Archive file list does not match manifest")
-    if json.loads(contents[prefix + "manifest.json"]) != manifest:
+    if embedded != manifest:
         raise ValueError("Embedded manifest does not match sidecar")
     for name, expected_hash in expected.items():
-        if digest(contents[name]) != expected_hash:
+        if hashes[name] != expected_hash:
             raise ValueError("Checksum mismatch: " + name)
 
 
@@ -327,7 +472,7 @@ def main():
     compile_parser.add_argument("--source", type=Path, default=ROOT / ".work/source")
     compile_parser.add_argument("--work", type=Path, default=ROOT / ".work/build")
     compile_parser.add_argument("--output", type=Path, default=ROOT / "dist")
-    compile_parser.add_argument("--jobs", type=int, default=min(os.cpu_count() or 2, 8))
+    compile_parser.add_argument("--jobs", type=int, help="Override the target's build parallelism")
     args = parser.parse_args()
     if args.command == "plan":
         lock, planned = matrix(args.target)

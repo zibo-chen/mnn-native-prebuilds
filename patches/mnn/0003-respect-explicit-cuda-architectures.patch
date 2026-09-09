@@ -1,0 +1,38 @@
+--- a/source/backend/cuda/CMakeLists.txt
++++ b/source/backend/cuda/CMakeLists.txt
+@@ -36,10 +36,11 @@
+ 
+     # When MNN_CUDA_NATIVE_ARCH is ON, only compile for the auto-detected local
+     # arch (skips the broad gencode list below). Saves compile time and disk.
++    option(MNN_CUDA_EXPLICIT_ARCHS "Use only the explicit CUDA_ARCHS list for distributable builds" OFF)
+     option(MNN_CUDA_NATIVE_ARCH "Only emit gencode for local GPU arch" OFF)
+-    IF (MNN_CUDA_NATIVE_ARCH AND ${arch_count} EQUAL 1)
++    IF (MNN_CUDA_EXPLICIT_ARCHS OR (MNN_CUDA_NATIVE_ARCH AND ${arch_count} EQUAL 1))
+         set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} ${CUDA_ARCH_FLAGS}")
+-        message(STATUS "MNN_CUDA_NATIVE_ARCH=ON, only compile for sm_${CUDA_ARCH_FLAGS_readable_code}")
++        message(STATUS "Using explicit CUDA architectures: ${CUDA_ARCH_FLAGS_readable}")
+     ELSE()
+     IF ((CUDA_VERSION VERSION_GREATER "8.0") OR (CUDA_VERSION VERSION_EQUAL "8.0"))
+         set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -gencode arch=compute_60,code=sm_60")
+@@ -121,8 +122,10 @@
+     add_definitions(-DENABLE_CUDA_BF16)
+ ENDIF()
+ 
+-IF (MNN_CUDA_NATIVE_ARCH AND CUDA_ARCH_FLAGS_readable_code)
+-    add_definitions(-DMNN_CUDA_ENABLE_SM${CUDA_ARCH_FLAGS_readable_code})
++IF ((MNN_CUDA_EXPLICIT_ARCHS OR MNN_CUDA_NATIVE_ARCH) AND CUDA_ARCH_FLAGS_readable_code)
++    FOREACH(MNN_CUDA_SM IN LISTS CUDA_ARCH_FLAGS_readable_code)
++        add_definitions(-DMNN_CUDA_ENABLE_SM${MNN_CUDA_SM})
++    ENDFOREACH()
+ ENDIF()
+ 
+ IF (MNN_CUDA_TUNE_PARAM)
+@@ -159,7 +162,7 @@
+     message(STATUS "Cloned cutlass commit ${CUTLASS_COMMIT_HASH} to ${CUTLASS_SOURCE_DIR}")
+ endif()
+ 
+-set(CUTLASS_SRC ${CUTLASS_SOURCE_DIR})
++set(CUTLASS_SRC ${cutlass_SOURCE_DIR})
+ 
+ 
+ file(GLOB_RECURSE MNN_CUDA_SRC ${CMAKE_CURRENT_LIST_DIR}/core/* ${CMAKE_CURRENT_SOURCE_DIR}/execution/*)

@@ -1,0 +1,20 @@
+--- a/source/backend/vulkan/runtime/vulkan_wrapper.cpp
++++ b/source/backend/vulkan/runtime/vulkan_wrapper.cpp
+@@ -35,6 +35,7 @@
+ #ifdef _WIN32
+     "vulkan-1.dll",
+ #endif
++    "libvulkan.so.1",
+     "libvulkan.so",
+ #if defined(__APPLE__) || defined(__MACOSX)
+     "/usr/local/lib/libvulkan.dylib",// For mac install vk driver
+--- a/source/backend/opencl/core/runtime/OpenCLWrapper.cpp
++++ b/source/backend/opencl/core/runtime/OpenCLWrapper.cpp
+@@ -56,6 +56,7 @@
+         "/system/vendor/lib/libPVROCL.so", "/data/data/org.pocl.libs/files/lib/libpocl.so"
+     #endif
+     #elif defined(__linux__)
++        "libOpenCL.so.1",
+         "/usr/lib/libOpenCL.so",
+         "/usr/local/lib/libOpenCL.so",
+         "/usr/local/lib/libpocl.so",

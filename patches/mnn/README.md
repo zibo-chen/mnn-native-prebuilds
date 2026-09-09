@@ -10,6 +10,11 @@ They apply to upstream commit `9070bc73ae40500bc7202975142b43f488bf10d8`.
 - `0002`: Remove `/Zi` from Release compiler flags so distributed static libraries
   do not reference unavailable compiler PDB files. Equivalent to the source fix
   in old-fork commit `419ec534e874d8d76877ddbe035eddb8001373c2`.
+- `0003`: Honor an explicit, multi-architecture `CUDA_ARCHS` list instead of
+  upstream's broad default gencode list. Keep architecture-specific definitions
+  separate, and honor the checksum-verified CUTLASS FetchContent source override.
+- `0004`: Try Linux's versioned Vulkan/OpenCL loader sonames before the existing
+  search paths, so development-package symlinks are not required at runtime.
 
 `_USE_STD_VECTOR_ALGORITHMS=0` is a compiler definition in the build recipe,
 not a source patch. Windows packages are checked for both vector-helper
