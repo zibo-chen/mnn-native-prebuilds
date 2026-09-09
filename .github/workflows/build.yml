@@ -76,8 +76,8 @@ jobs:
         with:
           cuda: ${{ matrix.cuda.version }}
           method: network
-          sub-packages: '["nvcc", "cudart-dev", "cccl", "cuobjdump"]'
-          non-cuda-sub-packages: '["libcublas-dev"]'
+          sub-packages: '["nvcc", "cudart-dev", "nvrtc-dev", "cccl", "cuobjdump"]'
+          non-cuda-sub-packages: '["libcublas-dev", "libcusolver-dev"]'
           log-file-suffix: ${{ matrix.target }}
       - name: Install pinned CUDA toolkit (Windows)
         if: matrix.cuda && matrix.os == 'windows'
@@ -85,7 +85,7 @@ jobs:
         with:
           cuda: ${{ matrix.cuda.version }}
           method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "cuobjdump", "thrust"]'
+          sub-packages: '["nvcc", "cudart", "nvrtc_dev", "cublas", "cublas_dev", "cusolver_dev", "cuobjdump", "thrust"]'
           log-file-suffix: ${{ matrix.target }}
       - name: Install software Vulkan device for backend inference tests
         if: contains(matrix.software_backend_tests, 'vulkan')

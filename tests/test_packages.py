@@ -94,6 +94,14 @@ class PackageContracts(unittest.TestCase):
         self.assertIn(("source/backend/cuda/libMNN_Cuda_Main.so", "cuda-static/libMNN_Cuda_Main.so"),
                       build.library_names(target, False))
 
+    def test_windows_cuda_path_uses_cmake_slashes(self):
+        _, config = build.configuration()
+        target = config["targets"]["windows-x86_64-cuda12"]
+        with patch.dict(build.os.environ, {"CUDA_PATH": r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"}):
+            definitions = build.cmake_definitions(config, target, "x86_64", False)
+        self.assertEqual(definitions["CUDA_TOOLKIT_ROOT_DIR"], "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8")
+        self.assertEqual(definitions["CUDA_ARCHS"], "7.5;8.0;8.6;8.9;9.0;12.0+PTX")
+
     @unittest.skipUnless(shutil.which("cmake"), "CMake unavailable")
     def test_cmake_rejects_missing_required_backend(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -40,8 +40,13 @@ int main(int argc, char** argv) {
     auto session = interpreter->createSession(config, runtime);
     if (!session) return 6;
     int activeBackends[2] = {-1, -1};
-    if (!interpreter->getSessionInfo(session, MNN::Interpreter::BACKENDS, activeBackends)
-        || activeBackends[0] != requested->second) return 7;
+    if (!interpreter->getSessionInfo(session, MNN::Interpreter::BACKENDS, activeBackends)) return 7;
+    // x86 CPU kernels report the optimized CPU extension backend after scheduling.
+    const bool optimizedCPU = requested->second == MNN_FORWARD_CPU && activeBackends[0] == MNN_FORWARD_CPU_EXTENSION;
+    if (activeBackends[0] != requested->second && !optimizedCPU) {
+        std::cerr << "Requested " << name << " but session selected backend " << activeBackends[0] << "\n";
+        return 7;
+    }
     auto sessionInput = interpreter->getSessionInput(session, "input");
     auto sessionOutput = interpreter->getSessionOutput(session, "output");
     if (!sessionInput || !sessionOutput) return 8;

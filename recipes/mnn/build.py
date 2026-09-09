@@ -161,7 +161,9 @@ def cmake_definitions(config, target, arch, shared):
     if "cuda" in target:
         definitions["CUDA_ARCHS"] = ";".join(target["cuda"]["architectures"])
         if os.environ.get("CUDA_PATH"):
-            definitions["CUDA_TOOLKIT_ROOT_DIR"] = os.environ["CUDA_PATH"]
+            # Legacy FindCUDA expands macro arguments as CMake source; backslashes
+            # in an untyped -D cache entry would become invalid escapes such as \P.
+            definitions["CUDA_TOOLKIT_ROOT_DIR"] = os.environ["CUDA_PATH"].replace("\\", "/")
         if target["os"] == "linux":
             definitions.update(CMAKE_BUILD_WITH_INSTALL_RPATH="ON", CMAKE_INSTALL_RPATH="$ORIGIN")
     if target["os"] == "android":
@@ -350,9 +352,9 @@ def build(name, source, work, output, jobs):
         for shared in ([False, True] if target["shared"] else [False]):
             definitions = cmake_definitions(config, target, arch, shared)
             if "kleidiai" in dependencies and arch in ("arm64", "aarch64"):
-                definitions["KLEIDIAI_SRC_DIR"] = str(dependencies["kleidiai"])
+                definitions["KLEIDIAI_SRC_DIR"] = dependencies["kleidiai"].as_posix()
             if "cutlass" in dependencies:
-                definitions["FETCHCONTENT_SOURCE_DIR_CUTLASS"] = str(dependencies["cutlass"])
+                definitions["FETCHCONTENT_SOURCE_DIR_CUTLASS"] = dependencies["cutlass"].as_posix()
             directory = work / (arch + ("-shared" if shared else "-static"))
             run(["cmake", "-S", source, "-B", directory, "-G", "Ninja",
                  *["-D" + k + "=" + v for k, v in definitions.items()]])
