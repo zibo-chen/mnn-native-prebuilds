@@ -1,0 +1,44 @@
+name: Check upstream MNN tags
+run-name: Check MNN tags · ${{ github.event_name }}
+
+on:
+  schedule:
+    # UTC; avoid the busy top of the hour. A tag-only upstream release is enough.
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Inspect tags and planned build without committing or dispatching
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: mnn-upstream-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check tags, verify patches, pin source and dispatch the complete build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=()
+          if [[ "$DRY_RUN" != true ]]; then
+            args+=(--apply)
+          fi
+          python scripts/check_upstream.py "${args[@]}"

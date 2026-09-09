@@ -2,7 +2,9 @@
 
 These patches preserve the build fixes from
 [zibo-chen/MNN-Prebuilds](https://github.com/zibo-chen/MNN-Prebuilds).
-They apply to upstream commit `9070bc73ae40500bc7202975142b43f488bf10d8`.
+They were introduced for upstream commit `9070bc73ae40500bc7202975142b43f488bf10d8`
+and also apply to the official `3.6.1` tag (`d407447ed56c4121a11ccbd266dc184ca1ead0c2`).
+The automated tag checker verifies applicability before committing a new source lock.
 
 - `0001`: Raise the root CMake minimum to 3.10; avoid GNU ARM assembly with
   native MSVC; avoid KleidiAI assembly on Windows. Migrated from the old fork's

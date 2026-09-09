@@ -1,4 +1,5 @@
 name: Build MNN packages
+run-name: MNN ${{ inputs.target }} · publish=${{ inputs.publish }} · ${{ inputs.builder_ref || github.sha }}
 
 on:
   workflow_dispatch:
@@ -12,12 +13,16 @@ on:
         description: Publish a new release after the complete matrix passes
         type: boolean
         default: false
+      builder_ref:
+        description: Optional immutable builder commit SHA (used by the upstream checker)
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: mnn-build-${{ github.ref }}-${{ inputs.target }}
+  group: mnn-build-${{ inputs.builder_ref || github.sha }}-${{ inputs.target }}
   cancel-in-progress: false
 
 jobs:
@@ -27,6 +32,8 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.builder_ref || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -35,9 +42,14 @@ jobs:
         env:
           BUILD_TARGET: ${{ inputs.target }}
           PUBLISH: ${{ inputs.publish }}
+          BUILDER_REF: ${{ inputs.builder_ref }}
         run: |
           if [[ "$PUBLISH" == true && "$BUILD_TARGET" != all ]]; then
             echo 'Publishing requires all targets.' >&2
+            exit 1
+          fi
+          if [[ -n "$BUILDER_REF" && ! "$BUILDER_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'builder_ref must be a full commit SHA.' >&2
             exit 1
           fi
           python -m unittest discover -s tests -v
@@ -56,6 +68,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.builder_ref || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -127,6 +141,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.builder_ref || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

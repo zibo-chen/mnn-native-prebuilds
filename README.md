@@ -8,7 +8,7 @@
 
 ## 平台和后端
 
-迁移原 [MNN-Prebuilds](https://github.com/zibo-chen/MNN-Prebuilds) 的 10 个目标，保留 CPU 和 Apple Metal 配置，增加 12 个 GPU / CoreML 组合，共 22 个包。当前固定到上游提交 `9070bc73`，MNN 版本宏为 `3.6.0`。**这个提交晚于 3.6.0 标签，不等同于该标签的源码。** 完整 SHA 和补丁见版本锁文件。
+迁移原 [MNN-Prebuilds](https://github.com/zibo-chen/MNN-Prebuilds) 的 10 个目标，保留 CPU 和 Apple Metal 配置，增加 12 个 GPU / CoreML 组合，共 22 个包。**当前版本、完整 SHA 和补丁以 [版本锁](versions/mnn.json) 为准**。迁移时的 `3.6.0-9070bc73-r1/r2` 使用开发提交，不等同于 3.6.0 正式标签；自动跟进的版本则直接锁定正式 tag 对应的提交。
 
 基础包如下。所有包都包含 CPU 后端，可在应用中显式选择加速后端；具体可用性还取决于设备、驱动和模型算子。
 
@@ -101,6 +101,30 @@ Apple Metal 功能按消费端需要另行启用。旧版 `ocr-rs` 的自动下�
 
 ## 构建和发布
 
+### 自动跟进上游 tag
+
+[Check upstream MNN tags](https://github.com/zibo-chen/mnn-native-prebuilds/actions/workflows/upstream.yml) 每 6 小时检查一次 `alibaba/MNN` 的 Git tags（UTC 的 00:23、06:23、12:23、18:23）。上游只推送 tag、没有创建 GitHub Release 页面，也会被发现。
+
+- 识别 `3.6.1`、`v3.6.1` 这类正式版本，按数值版本排序；暂不跟进 `rc`、`beta`、Android 专用标签等。首次启用会补构建比当前版本锁更新的正式版本。一次处理一个版本，多个新版本按顺序处理。
+- 将附注 tag 解析到完整 commit SHA，先验证源码版本宏和全部兼容补丁，再由 `github-actions[bot]` 提交 `versions/mnn.json`。新版本从打包修订 `r1` 开始，保留已有后端、依赖锁和补丁配置。
+- 显式触发完整矩阵的构建与发布，将版本锁所在的 **builder commit SHA** 传给所有构建/发布 job，避免构建期间 `main` 更新导致包混用不同配方。只需要仓库自带的 `GITHUB_TOKEN`，无需配置 PAT 或上游 webhook。
+- 已发布的版本直接跳过；同一构建提交正在运行或已经尝试过时，不会重复启动。若提交版本锁后 dispatch 中断，下次检查会恢复启动。
+- 构建失败不发布、不覆盖旧包；可以在失败的构建上选择 **Re-run failed jobs**。修复配方并推送新的 builder commit 后，下次检查会重试尚未发布的当前版本。后续更高版本 tag 仍可被发现。tag 被移动/删除、存在同名草稿 Release 或补丁不兼容时会明确失败，等待维护者处理。
+
+立即检查并按需构建，或者只预览发现结果：
+
+```sh
+gh workflow run upstream.yml --repo zibo-chen/mnn-native-prebuilds
+gh workflow run upstream.yml --repo zibo-chen/mnn-native-prebuilds -F dry_run=true
+
+# 本地只读预览，不修改仓库、不启动构建
+python3 scripts/check_upstream.py
+```
+
+检查结果显示在对应 Actions run 的 Summary 中。该流程会自动向默认分支提交版本锁，因此若以后启用分支保护，需要允许机器人更新该文件或调整更新策略。GitHub 定时任务可能延迟；公开仓库连续 60 天没有活动时，定时工作流会被自动停用，需要在 Actions 页面重新启用，详见 [GitHub 的说明](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/disable-and-enable-workflows)。
+
+### 手动构建
+
 GitHub Actions 的 `Build MNN packages` 支持 `target=all`、`target=backends`（仅 12 个扩展组合）或配置文件中的单个目标。源码完全由当前构建仓库 commit 中的 `versions/mnn.json` 决定；选择哪个构建分支，就是使用哪个分支的版本锁和配方。
 
 ```sh
@@ -112,6 +136,8 @@ gh workflow run build.yml --repo zibo-chen/mnn-native-prebuilds -f target=all -F
 ```
 
 只有完整矩阵可以发布。发布前重新验证压缩包内容、SHA-256、源码/补丁/构建 commit 一致性，以及消费端测试记录。Release 附带 `index.json`、`SHA256SUMS` 和各包独立清单。已有 Release 不会被覆盖；更新打包方式时应增加 `revision`，同步更新 `package_version` 和 `release_tag`。
+
+工作流还接受可选的 `builder_ref` 完整 SHA；自动检查器使用此参数固定配方版本，手动构建通常留空即可。工作流并发组也按 builder SHA 和目标隔离，同一提交的相同目标不会同时构建。
 
 本地构建使用 Python 3.9+、Git、Ninja 和目标工具链，推荐与 CI 一致的 CMake 3.31.6。CUDA 配方使用上游的 FindCUDA，暂不支持用 CMake 4 构建。CI 固定 CMake 3.31.6、Ninja 1.11.1.3、Android NDK 27.2.12479018、CUDA Toolkit 12.8.1；系统编译器随固定操作系统系列的 runner image 更新，实际版本记录在 manifest 中，因此目前不承诺位级一致的构建结果。
 

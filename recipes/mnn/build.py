@@ -113,8 +113,9 @@ def patch_records(lock):
             for name in lock["patches"]]
 
 
-def prepare(source):
-    lock, _ = configuration()
+def prepare(source, lock=None):
+    if lock is None:
+        lock, _ = configuration()
     source = source.resolve()
     if not source.exists():
         source.mkdir(parents=True)
